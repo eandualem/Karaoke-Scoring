@@ -2,6 +2,7 @@ import re
 import librosa
 import logging
 import numpy as np
+import pandas as pd
 from typing import List, Dict, Union, Tuple
 
 
@@ -22,33 +23,50 @@ class KaraokeData:
         self.track_audio = track_audio
         self.sampling_rate = sampling_rate
         self.current_position = 0
+        self.previous_position = 0
         self.initial_alignment_done = False
         self.lyrics_data = self._parse_lyrics(raw_lyrics_data)
 
-    def get_lyrics(self, start_time: float, end_time: float) -> List[str]:
+    def get_lyrics(self, start_time: float = None, end_time: float = None) -> List[str]:
         """Fetches the lyrics between the specified start and end times."""
+
+        start_time = start_time or librosa.samples_to_time(self.previous_position, sr=self.sampling_rate)
+        end_time = end_time or librosa.samples_to_time(self.current_position, sr=self.sampling_rate)
+
         lyrics_within_interval = []
         for entry in self.lyrics_data:
             if start_time <= entry["time"] <= end_time:
                 lyrics_within_interval.append(entry["lyrics"])
-        return lyrics_within_interval
+        return self._transform_lyrics(lyrics_within_interval)
+
+    def _transform_lyrics(self, lyrics_list):
+        transformed_lyrics = ""
+        word = ""
+        for syllable in lyrics_list:
+            if "\\n" in syllable:
+                parts = syllable.split("\\n")
+                word += parts[0]
+                transformed_lyrics += word.strip() + "\n"
+                word = parts[1] + " "
+            else:
+                word += syllable + " "
+        transformed_lyrics += word.strip()
+        return transformed_lyrics
 
     def _parse_lyrics(self, raw_lyrics: str) -> List[Dict[str, Union[float, str]]]:
-        """Converts raw LRC lyrics into a structured format."""
-        lines = raw_lyrics.split("\n")
-        parsed_lyrics = []
-        pattern = re.compile(r"\[(\d+):(\d+\.\d+)\](.+)")
-        for line in lines:
-            try:
-                match = pattern.match(line)
-                if match:
-                    minutes, seconds, lyrics_text = match.groups()
-                    time_seconds = float(minutes) * 60 + float(seconds)
-                    parsed_lyrics.append({"time": time_seconds, "lyrics": lyrics_text.strip()})
-                else:
-                    logging.warning(f"Unexpected line format encountered - '{line}'")
-            except Exception as e:
-                logging.error(f"Error parsing line '{line}': {e}")
+        """Converts raw CSV lyrics into a structured format."""
+        try:
+            # Load the CSV data
+            csv_data = pd.read_csv(raw_lyrics)
+            csv_data = csv_data[csv_data["payload_type"] == 1]
+            parsed_lyrics = [
+                {"time": row["start_time"], "lyrics": row["payload"].strip()} for _, row in csv_data.iterrows()
+            ]
+
+        except Exception as e:
+            logging.error(f"Error parsing CSV lyrics: {e}")
+            parsed_lyrics = []
+
         return parsed_lyrics
 
     def align_audio(self, audio_chunk: np.array, method: str = "cross_correlation"):

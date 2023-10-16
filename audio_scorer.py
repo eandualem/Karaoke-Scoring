@@ -1,128 +1,85 @@
 import librosa
-from Levenshtein import distance as levenshtein_distance
-from typing import Callable, Dict
-import numpy as np
-from karaoke_data import KaraokeData
 import logging
-
-# from dtaidistance import dtw
-# from tslearn.metrics import dtw
-# from fastdtw import fastdtw
-
-# from scipy.spatial.distance import euclidean
+import numpy as np
+from typing import Callable, Dict
+from dtw_helper import DTWHelper
+from Levenshtein import distance as levenshtein_distance
+from audio_vis import AudioVis
 
 
 class AudioScorer:
-    """Handles audio scoring tasks."""
+    """Computes various audio scores."""
 
-    def __init__(self, karaoke_data_instance: KaraokeData, transcriber: Callable):
-        """Initialize with a karaoke data instance and a transcriber."""
-        self.karaoke_data = karaoke_data_instance
+    def __init__(self, transcriber: Callable, dtw_method: str = "fastdtw"):
         self.transcriber = transcriber
+        self.dtw_helper = DTWHelper(method=dtw_method)
+        self.av = AudioVis()
 
-    def transcribe_audio(self, audio: np.ndarray) -> str:
-        """Transcribes the provided audio."""
-        return self.transcriber.transcribe(audio, self.karaoke_data.sampling_rate)
+    @staticmethod
+    def _levenshtein_similarity(text1: str, text2: str) -> float:
+        """Compute Levenshtein similarity between two strings."""
+        distance = levenshtein_distance(text1.lower().strip(), text2.lower().strip())
+        return 1 - (distance / max(len(text1), len(text2)))
 
-    def linguistic_accuracy_score(self, user_audio: np.ndarray, actual_lyrics: str) -> float:
-        """Computes linguistic accuracy based on transcribed text."""
+    def linguistic_accuracy_score(self, user_audio: np.ndarray, sr: int, actual_lyrics: str) -> float:
+        """Linguistic accuracy based on transcribed text."""
         try:
-            user_transcription = self.transcribe_audio(user_audio).lower().strip()
-            normalized_lyrics = actual_lyrics.lower().strip()
-            distance = levenshtein_distance(user_transcription, normalized_lyrics)
-            user_score = 1 - (distance / max(len(user_transcription), len(normalized_lyrics)))
-            return user_score
+            user_transcription = self.transcriber.transcribe(user_audio, sr)
+            self.av.play_audio(user_audio, sr)
+            print(f"transcription: {user_transcription}")
+            print(f"actual_lyrics: {actual_lyrics}")
+            return self._levenshtein_similarity(user_transcription, actual_lyrics)
         except Exception as e:
-            logging.error(f"Error computing linguistic accuracy score: {e}")
-            return 0.0  # Default score
+            logging.error(f"Linguistic accuracy computation failed: {e}")
+            return 0.0
 
     def compute_dtw_score(self, user_audio_features: np.ndarray, reference_audio_features: np.ndarray) -> float:
-        """Computes DTW score between user and reference audio features."""
-        try:
-            distance = self.basic_dtw(user_audio_features, reference_audio_features)
-            # distance = dtw(user_audio_features, reference_audio_features)
-            # distance = dtw.distance(user_audio_features, reference_audio_features)
+        """DTW score between user and reference audio features."""
+        return self.dtw_helper.compute_similarity(user_audio_features, reference_audio_features)
 
-            # Normalize the distance
-            normalized_distance = distance / (len(reference_audio_features) + len(user_audio_features))
-            score = 1 / (1 + normalized_distance)
+    def amplitude_matching_score(self, user_audio: np.ndarray, reference_audio: np.ndarray, sr: int) -> float:
+        """Amplitude matching score."""
+        new_sample_rate = sr // 8
 
-            return score
-        except Exception as e:
-            logging.error(f"Error computing DTW score: {e}")
-            return 0.0  # Default score
+        # We might not need to downsample by this much if fastdtw works
+        user_audio_downsampled = librosa.resample(user_audio, orig_sr=sr, target_sr=new_sample_rate)
+        reference_audio_downsampled = librosa.resample(reference_audio, orig_sr=sr, target_sr=new_sample_rate)
 
-    def basic_dtw(self, s, t):
-        """
-        Computes the Dynamic Time Warping distance between sequences s and t.
-        :param s: Sequence s
-        :param t: Sequence t
-        :return: DTW distance
-        """
-        n, m = len(s), len(t)
-        dtw_matrix = np.zeros((n + 1, m + 1))
-        for i in range(n + 1):
-            for j in range(m + 1):
-                dtw_matrix[i, j] = np.inf
-        dtw_matrix[0, 0] = 0
-
-        for i in range(1, n + 1):
-            for j in range(1, m + 1):
-                cost = abs(s[i - 1] - t[j - 1])
-                dtw_matrix[i, j] = cost + min(dtw_matrix[i - 1, j], dtw_matrix[i, j - 1], dtw_matrix[i - 1, j - 1])
-
-        return dtw_matrix[n, m]
-
-    def amplitude_matching_score(self, user_audio: np.ndarray, reference_audio: np.ndarray) -> float:
-        """Compute amplitude matching score."""
-        try:
-            user_audio_1d = user_audio.flatten()
-            reference_audio_1d = reference_audio.flatten()
-            return self.compute_dtw_score(user_audio_1d, reference_audio_1d)
-        except Exception as e:
-            print(f"Error computing amplitude matching score: {e}")
-            return 0.0  # Default score
+        return self.compute_dtw_score(user_audio_downsampled.flatten(), reference_audio_downsampled.flatten())
 
     def pitch_matching_score(self, user_audio: np.ndarray, reference_audio: np.ndarray) -> float:
-        """Compute pitch matching score."""
-        try:
-            user_pitch, _, _ = librosa.pyin(user_audio, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"))
-            reference_pitch, _, _ = librosa.pyin(
-                reference_audio, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7")
-            )
-            return self.compute_dtw_score(user_pitch, reference_pitch)
-        except Exception as e:
-            print(f"Error computing pitch matching score: {e}")
-            return 0.0  # Default score
+        """Pitch matching score."""
+        user_pitch, _, _ = librosa.pyin(user_audio, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"))
+        reference_pitch, _, _ = librosa.pyin(
+            reference_audio, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7")
+        )
+        # Remove NaN values:
+        user_pitch = user_pitch[~np.isnan(user_pitch)]
+        reference_pitch = reference_pitch[~np.isnan(reference_pitch)]
+
+        # return self.compute_dtw_score(user_pitch, reference_pitch) # Some bug here
+        return self.dtw_helper.compute_similarity_dtaidistance(user_pitch, reference_pitch)
 
     def rhythm_score(self, user_audio: np.ndarray, reference_audio: np.ndarray) -> float:
-        """Compute rhythm score."""
-        try:
-            user_onset_env = librosa.onset.onset_strength(y=user_audio)
-            reference_onset_env = librosa.onset.onset_strength(y=reference_audio)
-            return self.compute_dtw_score(user_onset_env, reference_onset_env)
-        except Exception as e:
-            print(f"Error computing rhythm score: {e}")
-            return 0.0  # Default score
+        """Rhythm score."""
+        user_onset_env = librosa.onset.onset_strength(y=user_audio)
+        reference_onset_env = librosa.onset.onset_strength(y=reference_audio)
+        return self.compute_dtw_score(user_onset_env, reference_onset_env)
 
-    def process_audio_chunk(self, audio_chunk: np.ndarray) -> Dict[str, float]:
-        """Process an audio chunk and compute scores."""
+    def process_audio_chunk(
+        self,
+        audio_chunk: np.ndarray,
+        reference_audio: np.ndarray,
+        actual_lyrics: str,
+        sr: int,
+    ) -> Dict[str, float]:
+        """Compute scores for an audio chunk."""
         scoring_functions = {
-            "linguistic_score": self.linguistic_accuracy_score,
-            "amplitude_score": self.amplitude_matching_score,
-            "pitch_score": self.pitch_matching_score,
-            "rhythm_score": self.rhythm_score,
+            "linguistic_score": lambda x, y: self.linguistic_accuracy_score(x, sr, actual_lyrics),
+            "amplitude_score": lambda x, y: self.amplitude_matching_score(x, y, sr),
+            "pitch_score": lambda x, y: self.pitch_matching_score(x, y),
+            "rhythm_score": lambda x, y: self.rhythm_score(x, y),
         }
 
-        scores = {}
-        for score_name, func in scoring_functions.items():
-            try:
-                if score_name == "linguistic_score":
-                    scores[score_name] = func(audio_chunk, self.karaoke_data.get_next_lyrics())
-                else:
-                    scores[score_name] = func(audio_chunk)
-            except Exception as e:
-                print(f"Error computing {score_name}: {e}")
-                scores[score_name] = 0.0  # Default score
-
+        scores = {score_name: func(audio_chunk, reference_audio) for score_name, func in scoring_functions.items()}
         return scores

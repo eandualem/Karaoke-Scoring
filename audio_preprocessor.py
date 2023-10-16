@@ -40,7 +40,7 @@ class AudioPreprocessor:
         return np.concatenate(cleaned_signal, axis=0)
 
     @staticmethod
-    def spectral_gate(signal: np.array, threshold: float) -> np.array:
+    def spectral_gate(signal: np.array, threshold: float = 0.1) -> np.array:
         """Suppresses frequency components of the signal below the threshold."""
         stft_signal = librosa.stft(signal)
         stft_signal[np.abs(stft_signal) < threshold] = 0
@@ -55,13 +55,6 @@ class AudioPreprocessor:
         intervals = librosa.effects.split(S, top_db=top_db)
         voiced_signal = [signal[start:end] for start, end in intervals]
         return np.concatenate(voiced_signal, axis=0)
-
-    @staticmethod
-    def apply_spectral_mask(signal: np.array, mask: np.array, threshold: float = 0.5) -> np.array:
-        """Applies a spectral mask to emphasize or suppress frequency components."""
-        stft_signal = librosa.stft(signal)
-        stft_signal[mask < threshold] = 0
-        return librosa.istft(stft_signal)
 
     @staticmethod
     def source_separation(audio_chunk: np.array, sr: int = 22050, n_components: int = 2) -> np.array:
@@ -125,8 +118,8 @@ class AudioPreprocessor:
         }
         for step in pipeline:
             if step in processing_map:
-                if step in kwargs:
-                    audio = processing_map[step](audio, **kwargs[step])
+                if step == "adaptive_noise_reduction":
+                    audio = processing_map[step](audio, reference_audio=kwargs.get("reference_audio"))
                 else:
                     audio = processing_map[step](audio)
             else:
